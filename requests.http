@@ -1,0 +1,70 @@
+### MoneroWalletManager manual requests
+# Adjust base URL if needed
+@base = http://localhost:8004
+
+### Health check
+GET {{base}}/healthz
+
+### Create a subaddress for user_id=1 (label optional)
+POST {{base}}/addresses
+Content-Type: application/json
+
+{
+  "user_id": 3,
+  "label": "user1-main"
+}
+
+### List addresses (all)
+GET {{base}}/addresses
+
+### List addresses for user 1
+GET {{base}}/addresses?user_id=5
+
+### Lookup details by address (fills account/address indices)
+# Replace with a real subaddress from previous calls
+GET {{base}}/addresses/by-address/BYgJzU2FC7jBTYMu2gvqEVbGtAsFSy3eM2HUxwY49XdZCsfQvar6fBM2UHgB8qcNZJNLnQbKd2FCBe8uk5FyPLVwGFbMFAv
+
+### Get balance for an address (atomic and XMR)
+# Replace with a real subaddress
+GET {{base}}/balance/BYgJzU2FC7jBTYMu2gvqEVbGtAsFSy3eM2HUxwY49XdZCsfQvar6fBM2UHgB8qcNZJNLnQbKd2FCBe8uk5FyPLVwGFbMFAv
+
+### Transfer 0.1 XMR to an address
+# NOTE: Requires wallet to have unlocked funds. Uses default account unless from_address provided.
+POST {{base}}/transfer
+Content-Type: application/json
+
+{
+  "to_address": "47...DEST...",
+  "amount_xmr": 0.1
+}
+
+### Transfer 0.05 XMR specifically from one of your subaddresses
+POST {{base}}/transfer
+Content-Type: application/json
+
+{
+  "from_address": "9zjrFA1FpJs4XdxiXhGXSV9auSaxS2EZnDZD7qxaZQ8dEF4Zxfj2PTkX2uBSjEyj9YPn2DjevjNWsAcCYb9L5HMNUU7Mncn",
+  "to_address": "BYgJzU2FC7jBTYMu2gvqEVbGtAsFSy3eM2HUxwY49XdZCsfQvar6fBM2UHgB8qcNZJNLnQbKd2FCBe8uk5FyPLVwGFbMFAv",
+  "amount_xmr": 1
+}
+
+
+### Primary address
+GET {{base}}/primary_address
+
+### Sweep all from a subaddress to primary
+POST {{base}}/sweep_all
+Content-Type: application/json
+
+{
+  "from_address": "REPLACE_FROM_SUBADDRESS"
+}
+
+### Sweep all with explicit destination
+POST {{base}}/sweep_all
+Content-Type: application/json
+
+{
+  "from_address": "REPLACE_FROM_SUBADDRESS",
+  "to_address": "REPLACE_PRIMARY_OR_CUSTOM"
+}
