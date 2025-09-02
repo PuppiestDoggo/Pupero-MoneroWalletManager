@@ -2,6 +2,12 @@ from fastapi import FastAPI, Depends, HTTPException, Query, Body
 from sqlmodel import Session, select
 from typing import Optional, List, Dict, Any
 import os
+import json
+import asyncio
+import logging
+import threading
+import time
+import pika
 from dotenv import load_dotenv
 
 from .database import init_db, get_session
@@ -16,6 +22,18 @@ MONERO_RPC_PASSWORD = os.getenv("MONERO_RPC_PASSWORD", "")
 DEFAULT_ACCOUNT_INDEX = int(os.getenv("MONERO_ACCOUNT_INDEX", "0"))
 MONERO_RPC_AUTH_SCHEME = os.getenv("MONERO_RPC_AUTH_SCHEME", "basic")
 
+# RabbitMQ config
+RABBITMQ_URL = os.getenv("RABBITMQ_URL")
+RABBITMQ_QUEUE = os.getenv("RABBITMQ_QUEUE", "monero.transactions")
+RABBITMQ_POLL_INTERVAL_SECONDS = int(os.getenv("RABBITMQ_POLL_INTERVAL_SECONDS", "1800"))
+
+# Logger
+logger = logging.getLogger("monero_wallet_manager")
+if not logger.handlers:
+    _h = logging.StreamHandler()
+    logger.setLevel(logging.INFO)
+    logger.addHandler(_h)
+
 app = FastAPI(title="Monero Wallet Manager")
 
 
@@ -23,10 +41,112 @@ app = FastAPI(title="Monero Wallet Manager")
 async def on_startup():
     init_db()
     app.state.rpc = MoneroRPC(MONERO_RPC_URL, MONERO_RPC_USER or None, MONERO_RPC_PASSWORD or None, auth_scheme=MONERO_RPC_AUTH_SCHEME)
+    # Start background consumer that polls RabbitMQ every RABBITMQ_POLL_INTERVAL_SECONDS
+    try:
+        if RABBITMQ_URL:
+            t = threading.Thread(target=_consumer_loop, name="rabbitmq-consumer", daemon=True)
+            t.start()
+            logger.info(json.dumps({"event": "consumer_started", "interval_seconds": RABBITMQ_POLL_INTERVAL_SECONDS}))
+        else:
+            logger.info(json.dumps({"event": "consumer_disabled", "reason": "RABBITMQ_URL not set"}))
+    except Exception as e:
+        logger.warning(json.dumps({"event": "consumer_start_failed", "error": str(e)}))
 
 
 def _rpc() -> MoneroRPC:
     return app.state.rpc  # type: ignore
+
+# ---- RabbitMQ consumer implementation ----
+
+def _run_async(coro):
+    """Run an async coroutine in a dedicated event loop (thread-safe)."""
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(coro)
+    finally:
+        try:
+            loop.close()
+        except Exception:
+            pass
+        asyncio.set_event_loop(None)
+
+
+def _process_withdraw(obj: Dict[str, Any]):
+    """Process a single withdraw message by calling wallet RPC transfer_split."""
+    to_address = obj.get("to_address")
+    amount_xmr = obj.get("amount_xmr")
+    from_address = obj.get("from_address")
+    if not to_address or amount_xmr is None:
+        raise RuntimeError("Invalid withdraw message: missing to_address or amount_xmr")
+    params: Dict[str, Any] = {
+        "destinations": [{"amount": MoneroRPC.xmr_to_atomic(float(amount_xmr)), "address": to_address}],
+        "get_tx_keys": True,
+    }
+    # Resolve from_address indices if provided
+    if from_address:
+        try:
+            idx = _run_async(_rpc().call("get_address_index", {"address": from_address}))
+            major = int(idx.get("index", {}).get("major", 0))
+            minor = int(idx.get("index", {}).get("minor", 0))
+            params["account_index"] = major
+            params["subaddr_indices"] = [minor]
+        except Exception as e:
+            # If resolution fails, log and proceed without using from_address
+            logger.warning(json.dumps({"event": "from_address_resolve_failed", "from_address": from_address, "error": str(e)}))
+    # Optional passthrough
+    for k in ["priority", "ring_size", "do_not_relay", "payment_id", "unlock_time"]:
+        if k in obj:
+            params[k] = obj[k]
+    # Call transfer_split
+    res = _run_async(_rpc().call("transfer_split", params))
+    tx_hashes = res.get("tx_hash_list") or res.get("tx_hashes")
+    logger.info(json.dumps({"event": "withdraw_executed", "to": to_address, "amount_xmr": amount_xmr, "tx_hash_list": tx_hashes}))
+
+
+def _drain_queue_once():
+    if not RABBITMQ_URL:
+        return
+    params = pika.URLParameters(RABBITMQ_URL)
+    connection = pika.BlockingConnection(params)
+    ch = connection.channel()
+    ch.queue_declare(queue=RABBITMQ_QUEUE, durable=True)
+    processed = 0
+    try:
+        while True:
+            method, properties, body = ch.basic_get(queue=RABBITMQ_QUEUE, auto_ack=False)
+            if method is None:
+                break
+            try:
+                obj = json.loads(body.decode("utf-8")) if body else {}
+                if obj.get("type") == "withdraw":
+                    _process_withdraw(obj)
+                else:
+                    logger.info(json.dumps({"event": "unknown_message", "body": obj}))
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                processed += 1
+            except Exception as e:
+                logger.warning(json.dumps({"event": "message_processing_failed", "error": str(e)}))
+                # Requeue the message for later
+                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+                # Avoid rapid retries on persistent failure
+                break
+    finally:
+        try:
+            connection.close()
+        except Exception:
+            pass
+    if processed:
+        logger.info(json.dumps({"event": "queue_drain_complete", "processed": processed}))
+
+
+def _consumer_loop():
+    while True:
+        try:
+            _drain_queue_once()
+        except Exception as e:
+            logger.warning(json.dumps({"event": "drain_exception", "error": str(e)}))
+        time.sleep(max(5, RABBITMQ_POLL_INTERVAL_SECONDS))
 
 
 @app.get("/healthz")
