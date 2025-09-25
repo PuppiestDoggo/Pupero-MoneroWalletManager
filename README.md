@@ -36,8 +36,8 @@ How to run locally
    uvicorn app.main:app --host 0.0.0.0 --port 8004
 
 Docker
-- Build: docker build -t pupero-monero-wallet-manager -f MoneroWalletManager/Dockerfile .
-- Run:  docker run --rm -p 8004:8004 --env-file MoneroWalletManager/.env pupero-monero-wallet-manager
+- Build: docker build -t pupero-WalletManager -f MoneroWalletManager/Dockerfile .
+- Run:  docker run --rm -p 8004:8004 --env-file MoneroWalletManager/.env pupero-WalletManager
 
 Exposing monero-wallet-rpc (testnet)
 We recommend running monero-wallet-rpc locally (127.0.0.1). The service connects to it using HTTP basic auth.

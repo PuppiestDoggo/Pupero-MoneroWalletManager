@@ -16,7 +16,7 @@ from .rpc import MoneroRPC
 
 load_dotenv()
 
-MONERO_RPC_URL = os.getenv("MONERO_RPC_URL", "http://host.docker.internal:18083")
+MONERO_RPC_URL = os.getenv("MONERO_RPC_URL", "http://pupero-wallet-rpc:18083")
 MONERO_RPC_USER = os.getenv("MONERO_RPC_USER", "")
 MONERO_RPC_PASSWORD = os.getenv("MONERO_RPC_PASSWORD", "")
 DEFAULT_ACCOUNT_INDEX = int(os.getenv("MONERO_ACCOUNT_INDEX", "0"))
@@ -151,7 +151,11 @@ def _consumer_loop():
 
 @app.get("/healthz")
 async def healthz():
-    return {"status": "ok"}
+    try:
+        res = await _rpc().call("get_version")
+        return {"healthy": True, "version": res}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"wallet-rpc unreachable: {e}")
 
 
 @app.get("/primary_address")
